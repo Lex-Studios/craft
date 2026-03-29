@@ -32,9 +32,13 @@
  *
  * Issue: #96
  * Branch: issue-096-implement-deployment-pipeline-orchestration
+ *
+ * Issue: #114
+ * Branch: issue-114-add-structured-logging-with-correlation-ids
  */
 
 import { createClient } from '@/lib/supabase/server';
+import { createLogger } from '@/lib/api/logger';
 import type { CustomizationConfig } from '@craft/types';
 import type { DeploymentStatusType } from '@craft/types';
 import { templateGeneratorService, type TemplateGeneratorService } from './template-generator.service';
@@ -58,6 +62,8 @@ export interface DeploymentPipelineRequest {
 export interface DeploymentPipelineResult {
     success: boolean;
     deploymentId: string;
+    /** Correlation ID that was threaded through every log entry for this run. */
+    correlationId: string;
     /** Present when success is true. */
     repositoryUrl?: string;
     /** Present when success is true. */
@@ -90,6 +96,10 @@ export class DeploymentPipelineService {
         const supabase = createClient();
         const { userId, templateId, customization, name } = request;
 
+        // ── Correlation ID ────────────────────────────────────────────────────
+        const correlationId = crypto.randomUUID();
+        const logger = createLogger({ correlationId, userId, service: 'deployment-pipeline' });
+
         // ── Step 1: Create deployment record ─────────────────────────────────
         const deploymentId = crypto.randomUUID();
 
@@ -108,15 +118,16 @@ export class DeploymentPipelineService {
             return {
                 success: false,
                 deploymentId,
+                correlationId,
                 errorMessage: `Failed to create deployment record: ${insertError.message}`,
             };
         }
 
-        await this.log(deploymentId, 'pending', 'Deployment record created', 'info');
+        await this.log(deploymentId, 'pending', 'Deployment record created', 'info', { correlationId });
 
         // ── Step 2: Generate code ─────────────────────────────────────────────
         await this.setStatus(deploymentId, 'generating');
-        await this.log(deploymentId, 'generating', 'Starting code generation', 'info');
+        await this.log(deploymentId, 'generating', 'Starting code generation', 'info', { correlationId });
 
         const generationResult = await this._templateGeneratorService.generate({
             templateId,
@@ -126,7 +137,7 @@ export class DeploymentPipelineService {
 
         if (!generationResult.success) {
             const msg = generationResult.errors.map((e) => e.message).join('; ');
-            return this.fail(deploymentId, 'generating', `Code generation failed: ${msg}`);
+            return this.fail(deploymentId, 'generating', `Code generation failed: ${msg}`, { correlationId });
         }
 
         await this.log(
@@ -134,12 +145,12 @@ export class DeploymentPipelineService {
             'generating',
             `Generated ${generationResult.generatedFiles.length} files`,
             'info',
-            { fileCount: generationResult.generatedFiles.length },
+            { correlationId, fileCount: generationResult.generatedFiles.length },
         );
 
         // ── Step 3: Create GitHub repository ─────────────────────────────────
         await this.setStatus(deploymentId, 'creating_repo');
-        await this.log(deploymentId, 'creating_repo', 'Creating GitHub repository', 'info');
+        await this.log(deploymentId, 'creating_repo', 'Creating GitHub repository', 'info', { correlationId });
 
         let repoFullName: string;
         let repositoryUrl: string;
@@ -171,7 +182,7 @@ export class DeploymentPipelineService {
                 'creating_repo',
                 `Repository created: ${repoFullName}`,
                 'info',
-                { repositoryUrl, resolvedName },
+                { correlationId, repositoryUrl, resolvedName },
             );
         } catch (err: unknown) {
             const svcErr = err as { code?: string; message?: string; retryAfterMs?: number };
@@ -179,13 +190,13 @@ export class DeploymentPipelineService {
                 deploymentId,
                 'creating_repo',
                 `GitHub repository creation failed: ${svcErr.message ?? 'unknown error'}`,
-                { code: svcErr.code, retryAfterMs: svcErr.retryAfterMs },
+                { correlationId, code: svcErr.code, retryAfterMs: svcErr.retryAfterMs },
             );
         }
 
         // ── Step 4: Push generated code ───────────────────────────────────────
         await this.setStatus(deploymentId, 'pushing_code');
-        await this.log(deploymentId, 'pushing_code', 'Pushing generated code to repository', 'info');
+        await this.log(deploymentId, 'pushing_code', 'Pushing generated code to repository', 'info', { correlationId });
 
         const githubToken = process.env.GITHUB_TOKEN ?? '';
         const [owner, repo] = repoFullName.split('/');
@@ -207,16 +218,16 @@ export class DeploymentPipelineService {
                 'pushing_code',
                 `Pushed ${commitRef.fileCount} files — commit ${commitRef.commitSha.slice(0, 7)}`,
                 'info',
-                { commitSha: commitRef.commitSha, fileCount: commitRef.fileCount },
+                { correlationId, commitSha: commitRef.commitSha, fileCount: commitRef.fileCount },
             );
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : 'Unknown push error';
-            return this.fail(deploymentId, 'pushing_code', `Code push failed: ${msg}`);
+            return this.fail(deploymentId, 'pushing_code', `Code push failed: ${msg}`, { correlationId });
         }
 
         // ── Step 5 & 6: Create Vercel project + trigger deployment ────────────
         await this.setStatus(deploymentId, 'deploying');
-        await this.log(deploymentId, 'deploying', 'Creating Vercel project', 'info');
+        await this.log(deploymentId, 'deploying', 'Creating Vercel project', 'info', { correlationId });
 
         // Resolve template family for env var generation
         let templateFamily: TemplateFamilyId = 'stellar-dex';
@@ -256,7 +267,7 @@ export class DeploymentPipelineService {
                 'deploying',
                 `Vercel project created: ${project.name}`,
                 'info',
-                { vercelProjectId },
+                { correlationId, vercelProjectId },
             );
 
             const deployment = await this._vercelService.triggerDeployment(
@@ -272,7 +283,7 @@ export class DeploymentPipelineService {
                 'deploying',
                 `Vercel deployment triggered: ${deploymentUrl}`,
                 'info',
-                { vercelDeploymentId, deploymentUrl },
+                { correlationId, vercelDeploymentId, deploymentUrl },
             );
         } catch (err: unknown) {
             const svcErr = err as { code?: string; message?: string };
@@ -280,7 +291,7 @@ export class DeploymentPipelineService {
                 deploymentId,
                 'deploying',
                 `Vercel deployment failed: ${svcErr.message ?? 'unknown error'}`,
-                { code: svcErr.code },
+                { correlationId, code: svcErr.code },
             );
         }
 
@@ -302,12 +313,15 @@ export class DeploymentPipelineService {
             'completed',
             `Deployment complete — ${deploymentUrl}`,
             'info',
-            { deploymentUrl },
+            { correlationId, deploymentUrl },
         );
+
+        logger.info('Deployment pipeline completed', { deploymentId, deploymentUrl });
 
         return {
             success: true,
             deploymentId,
+            correlationId,
             repositoryUrl,
             deploymentUrl,
         };
@@ -363,9 +377,12 @@ export class DeploymentPipelineService {
 
         await this.log(deploymentId, stage, errorMessage, 'error', metadata);
 
+        const correlationId = (metadata?.correlationId as string | undefined) ?? '';
+
         return {
             success: false,
             deploymentId,
+            correlationId,
             errorMessage,
             failedStage: stage,
         };
