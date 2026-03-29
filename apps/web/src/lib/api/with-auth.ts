@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { canConfigureCustomDomain } from '@/lib/stripe/pricing';
+import {
+    resolveCorrelationId,
+    createLogger,
+    CORRELATION_ID_HEADER,
+    type Logger,
+} from '@/lib/api/logger';
 import type { User } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SubscriptionTier } from '@craft/types';
