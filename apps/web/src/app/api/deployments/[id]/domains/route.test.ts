@@ -3,8 +3,6 @@ import { NextRequest } from 'next/server';
 
 const mockGetUser = vi.fn();
 const mockFrom = vi.fn();
-const mockListDomains = vi.fn();
-const mockGetCertificate = vi.fn();
 
 vi.mock('@/lib/supabase/server', () => ({
     createClient: () => ({
@@ -13,23 +11,15 @@ vi.mock('@/lib/supabase/server', () => ({
     }),
 }));
 
-vi.mock('@/services/vercel.service', () => ({
-    VercelService: vi.fn().mockImplementation(() => ({
-        listDomains: mockListDomains,
-        getCertificate: mockGetCertificate,
-    })),
-    VercelApiError: class VercelApiError extends Error {
-        constructor(message: string, public code: string) {
-            super(message);
-        }
-    },
-}));
-
-const fakeUser = { id: 'user-1' };
+const fakeUser = { id: 'user-1', email: 'user@example.com' };
 const params = { id: 'dep-1' };
 
-function makeRequest() {
-    return new NextRequest('http://localhost/api/deployments/dep-1/domains', { method: 'GET' });
+function makeRequest(body: unknown = { customDomain: 'app.example.com' }) {
+    return new NextRequest('http://localhost/api/deployments/dep-1/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
 }
 
 type QueryResult = { data: Record<string, unknown> | null; error: { message: string } | null };
@@ -41,10 +31,13 @@ function makeSupabaseQuery(results: QueryResult[]) {
                 single: vi.fn().mockResolvedValue(results.shift() ?? { data: null, error: null }),
             })),
         })),
+        update: vi.fn(() => ({
+            eq: vi.fn().mockResolvedValue(results.shift() ?? { data: null, error: null }),
+        })),
     };
 }
 
-describe('GET /api/deployments/[id]/domains', () => {
+describe('POST /api/deployments/[id]/domains', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mockGetUser.mockResolvedValue({ data: { user: fakeUser }, error: null });
@@ -52,95 +45,130 @@ describe('GET /api/deployments/[id]/domains', () => {
 
     it('returns 401 when unauthenticated', async () => {
         mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
-        const { GET } = await import('./route');
-        expect((await GET(makeRequest(), { params })).status).toBe(401);
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest(), { params });
+
+        expect(res.status).toBe(401);
     });
 
-    it('returns 403 when deployment belongs to another user', async () => {
+    it('returns 403 when the deployment belongs to another user', async () => {
         mockFrom.mockReturnValue(
-            makeSupabaseQuery([{ data: { user_id: 'other' }, error: null }]),
+            makeSupabaseQuery([{ data: { user_id: 'other-user' }, error: null }]),
         );
-        const { GET } = await import('./route');
-        expect((await GET(makeRequest(), { params })).status).toBe(403);
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest(), { params });
+
+        expect(res.status).toBe(403);
     });
 
-    it('returns 404 when deployment is not found', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: null, error: { message: 'not found' } }]));
-        const { GET } = await import('./route');
-        expect((await GET(makeRequest(), { params })).status).toBe(404);
+    it('returns 400 for an empty domain', async () => {
+        mockFrom.mockReturnValue(
+            makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+        );
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest({ customDomain: '' }), { params });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.code).toBe('DOMAIN_EMPTY');
     });
 
-    it('returns 404 when no Vercel project is configured', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { vercel_project_id: null }, error: null }]));
-        const { GET } = await import('./route');
-        const res = await GET(makeRequest(), { params });
-        expect(res.status).toBe(404);
-        expect((await res.json()).error).toMatch(/no vercel project/i);
+    it('returns 400 for an invalid domain format', async () => {
+        mockFrom.mockReturnValue(
+            makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+        );
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest({ customDomain: 'https://bad-domain.com/path' }), { params });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.code).toBe('DOMAIN_INVALID_FORMAT');
     });
 
-    it('returns 200 with verified domain and active SSL', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { vercel_project_id: 'prj_1' }, error: null }]));
-        mockListDomains.mockResolvedValue([
-            { name: 'example.com', verified: true, forceHttps: true, redirect: false },
-        ]);
-        mockGetCertificate.mockResolvedValue({ domain: 'example.com', state: 'active', expiresAt: '2027-01-01T00:00:00Z' });
+    it('returns 400 for a reserved domain', async () => {
+        mockFrom.mockReturnValue(
+            makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+        );
+        const { POST } = await import('./route');
 
-        const { GET } = await import('./route');
-        const res = await GET(makeRequest(), { params });
+        const res = await POST(makeRequest({ customDomain: 'example.com' }), { params });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.code).toBe('DOMAIN_RESERVED');
+    });
+
+    it('returns 400 for invalid JSON body', async () => {
+        mockFrom.mockReturnValue(
+            makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+        );
+        const { POST } = await import('./route');
+
+        const req = new NextRequest('http://localhost/api/deployments/dep-1/domains', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: 'not-json',
+        });
+        const res = await POST(req, { params });
+
+        expect(res.status).toBe(400);
+    });
+
+    it('returns 500 when the database update fails', async () => {
+        mockFrom
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: null, error: { message: 'db error' } }]),
+            );
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest(), { params });
+
+        expect(res.status).toBe(500);
+    });
+
+    it('returns 200 with DNS config for a valid apex domain', async () => {
+        mockFrom
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: null, error: null }]),
+            );
+        const { POST } = await import('./route');
+
+        const res = await POST(makeRequest({ customDomain: 'myapp.io' }), { params });
+
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.domains).toHaveLength(1);
-        expect(body.domains[0].domain).toBe('example.com');
-        expect(body.domains[0].verified).toBe(true);
-        expect(body.domains[0].ssl.state).toBe('active');
-        expect(body.domains[0].ssl.expiresAt).toBe('2027-01-01T00:00:00Z');
-        expect(body.domains[0].dns).toBeUndefined();
+        expect(body.domain).toBe('myapp.io');
+        expect(body.records.some((r: { type: string }) => r.type === 'A')).toBe(true);
+        expect(body.records.some((r: { type: string }) => r.type === 'AAAA')).toBe(true);
+        expect(body.providerInstructions.length).toBeGreaterThan(0);
+        expect(Array.isArray(body.notes)).toBe(true);
     });
 
-    it('includes dns config for unverified domains', async () => {
+    it('returns 200 with a CNAME record for a valid subdomain', async () => {
         mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { vercel_project_id: 'prj_1' }, error: null }]));
-        mockListDomains.mockResolvedValue([
-            { name: 'unverified.com', verified: false, forceHttps: false, redirect: false },
-        ]);
-        mockGetCertificate.mockResolvedValue({ domain: 'unverified.com', state: 'pending' });
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]),
+            )
+            .mockReturnValueOnce(
+                makeSupabaseQuery([{ data: null, error: null }]),
+            );
+        const { POST } = await import('./route');
 
-        const { GET } = await import('./route');
-        const res = await GET(makeRequest(), { params });
+        const res = await POST(makeRequest({ customDomain: 'app.example.com' }), { params });
+
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.domains[0].verified).toBe(false);
-        expect(body.domains[0].ssl.state).toBe('pending');
-        expect(body.domains[0].dns).toBeDefined();
-        expect(body.domains[0].dns.domain).toBe('unverified.com');
-    });
-
-    it('returns 200 with empty array when no domains configured', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { vercel_project_id: 'prj_1' }, error: null }]));
-        mockListDomains.mockResolvedValue([]);
-
-        const { GET } = await import('./route');
-        const res = await GET(makeRequest(), { params });
-        expect(res.status).toBe(200);
-        expect((await res.json()).domains).toEqual([]);
-    });
-
-    it('returns 500 when Vercel API fails', async () => {
-        mockFrom
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { user_id: fakeUser.id }, error: null }]))
-            .mockReturnValueOnce(makeSupabaseQuery([{ data: { vercel_project_id: 'prj_1' }, error: null }]));
-        mockListDomains.mockRejectedValue(new Error('Vercel API error'));
-
-        const { GET } = await import('./route');
-        expect((await GET(makeRequest(), { params })).status).toBe(500);
+        expect(body.domain).toBe('app.example.com');
+        expect(body.records.some((r: { type: string }) => r.type === 'CNAME')).toBe(true);
     });
 });
