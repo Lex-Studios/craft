@@ -2,6 +2,10 @@ import { Horizon, Transaction } from 'stellar-sdk';
 import { config } from './config';
 import { parseStellarError, formatError } from './errors';
 
+export type StellarAccount = Horizon.HorizonApi.AccountResponse;
+export type StellarBalance = StellarAccount['balances'][number];
+export type SubmitTransactionResult = Horizon.HorizonApi.SubmitTransactionResponse;
+
 // Initialize Stellar Server
 export const server = new Horizon.Server(config.stellar.horizonUrl);
 
@@ -20,9 +24,9 @@ export const networkPassphrase = config.stellar.networkPassphrase;
  * const account = await loadAccount('GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ');
  * ```
  */
-export async function loadAccount(publicKey: string) {
+export async function loadAccount(publicKey: string): Promise<StellarAccount> {
     try {
-        return await server.loadAccount(publicKey);
+        return await server.loadAccount(publicKey) as StellarAccount;
     } catch (error) {
         const parsed = parseStellarError(error);
         throw new Error(
@@ -44,10 +48,10 @@ export async function loadAccount(publicKey: string) {
  * console.log(balances);
  * ```
  */
-export async function getAccountBalance(publicKey: string) {
+export async function getAccountBalance(publicKey: string): Promise<StellarBalance[]> {
     try {
         const account = await loadAccount(publicKey);
-        return account.balances;
+        return account.balances as StellarBalance[];
     } catch (error) {
         const parsed = parseStellarError(error);
         throw new Error(
@@ -69,11 +73,15 @@ export async function getAccountBalance(publicKey: string) {
  * console.log('Transaction submitted:', response.id);
  * ```
  */
-export async function submitTransaction(transaction: Transaction) {
+export async function submitTransaction(transaction: Transaction): Promise<SubmitTransactionResult> {
+    const txHash = typeof (transaction as any)?.hash === 'function'
+        ? (transaction as any).hash()
+        : undefined;
+
     try {
-        return await server.submitTransaction(transaction);
+        return await server.submitTransaction(transaction) as SubmitTransactionResult;
     } catch (error) {
-        const parsed = parseStellarError(error, (transaction as any).hash);
+        const parsed = parseStellarError(error, txHash);
         throw new Error(
             `Failed to submit transaction: ${parsed.message}\n${formatError(error, true)}`
         );
