@@ -276,7 +276,7 @@ GET    /api/deployments/:id/health - Health check
 Deployment updates can optionally push generated workspaces to GitHub as part of the `updating_repo` stage.
 
 Implementation notes:
-- Service: `GitHubPushService` (`apps/web/src/services/github-push.service.ts`)
+- Service: `GitHubPushService` (`apps/backend/src/services/github-push.service.ts`)
 - Supports both first-time branch creation (from `baseBranch`) and updates to existing branches
 - Creates blobs in bounded batches for large generated file sets
 - Validates paths to prevent unsafe writes (`..`, absolute paths, `.git`)

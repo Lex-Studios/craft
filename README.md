@@ -1291,7 +1291,7 @@ npx supabase migration new migration_name
 2. **Import to Vercel**
    - Go to [vercel.com/new](https://vercel.com/new)
    - Import your GitHub repository
-   - Select the `apps/web` directory as root
+   - Select the `apps/frontend` directory as root
 
 3. **Configure Environment Variables**
    Add all variables from `.env.local` to Vercel:
@@ -1309,7 +1309,7 @@ npm install -g vercel
 vercel login
 
 # Deploy
-cd apps/web
+cd apps/frontend
 vercel --prod
 ```
 
@@ -1392,7 +1392,7 @@ This runs health checks every 5 minutes for all active deployments.
 Configure subscription limits in your code:
 
 ```typescript
-// apps/web/src/lib/subscription-limits.ts
+// apps/frontend/src/lib/subscription-limits.ts
 export const SUBSCRIPTION_LIMITS = {
   free: {
     maxDeployments: 1,
@@ -1445,7 +1445,7 @@ export const STELLAR_CONFIG = {
 Configure API rate limits:
 
 ```typescript
-// apps/web/src/middleware.ts
+// apps/frontend/src/middleware.ts
 export const RATE_LIMITS = {
   anonymous: {
     requests: 10,
@@ -1544,7 +1544,7 @@ npm run test -- packages/types
 ### Test Structure
 
 ```
-apps/web/
+apps/frontend/
 ├── src/
 │   ├── services/
 │   │   ├── auth.service.ts

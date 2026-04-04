@@ -16,7 +16,7 @@ export default defineConfig({
                 skipLibCheck: true,
                 jsx: 'preserve',
                 paths: {
-                    '@/*': ['./apps/web/src/*'],
+                    '@/*': ['./apps/frontend/src/*'],
                     '@craft/types': ['./packages/types/src'],
                 },
             },
@@ -24,7 +24,7 @@ export default defineConfig({
     },
     resolve: {
         alias: {
-            '@': resolve(__dirname, 'apps/web/src'),
+            '@': resolve(__dirname, 'apps/frontend/src'),
             '@craft/types': resolve(__dirname, 'packages/types/src'),
         },
     },
